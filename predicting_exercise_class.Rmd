@@ -1,0 +1,112 @@
+---
+title: "Predicting the quality of barbell lifts"
+author: "Rossella Bargiacchi"
+date: "December 23, 2015"
+output: html_document
+---
+## Introduction
+In this prediction exercise I will use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants who were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset). 
+I will fit a model that predicts the quality of the exercise based on the different measurements. I try three different models: a Multinomial model, a Tree model and a Bagging model. I split the training dataset into a subset for fitting the models and a subset for making out-of-sample comparisons among the models and I choose the model with the highest accuracy.
+
+## Acquiring the training data and sampling a test dataset
+```{r echo = TRUE, warning = FALSE}
+library(caret)
+pmlTraining <- read.csv("pml-training.csv") # my dataset is in the same directory as my Rmd file
+set.seed(2578)
+trainIndex = createDataPartition(pmlTraining$classe, p = 0.60, list = FALSE)
+training = pmlTraining[trainIndex,]
+testing = pmlTraining[-trainIndex,]
+```
+The dataset contains 19622 observations of 160 variables. I split it into a training set of 11776 observations and a test set of 7846 observations, so that I can fit different prediction models using my training set and make comparisons based on how they perform on the test set. 
+
+## Exploring and cleaning the data
+```{r echo = TRUE, warning = FALSE}
+head(summary(training$kurtosis_roll_belt))
+head(summary(training$kurtosis_yaw_belt))
+uselessVariables1 <- apply(training, 2, function(x) ifelse(sum(is.na(x)) == 11538, 1, 0))
+training <- training[,!uselessVariables1]
+uselessVariables2 <- apply(training, 2, function(x) ifelse(sum(x == "") == 11538, 1, 0))
+training <- training[,!uselessVariables2]
+```
+First of all, I see that in my training set there are some variables with a lot of NA's or empty values. I eliminate all those variables from my analysis. What remains is a set of 60 variables. The first seven are not useful for predictions because they contain information about time or the id of the subject. The last variale is the classe variable which is the one we wish to predict. So we can use 52 variables as predictors.
+
+I plot the classe variable, to have a look at its distribution. I can see that it is almost uniform, with a small peak in A.
+```{r echo = TRUE, warning = FALSE}
+barplot(table(training$classe))
+```
+
+Then I have a look at pairwise explanatory variables to see if I can find any pattern. In the plot below I show one  pair that shows some separation of the different classes and at the same time illustrates the complexity of the classification problem. Most other pairs of explanatory variables show less separation and more complexity.
+```{r echo = TRUE, warning = FALSE}
+library(ggplot2)
+qplot(pitch_belt, total_accel_forearm, col=classe, data=training, main = "Observations")
+```
+
+### Preparing the testing dataset
+I reproduce the same data transformations that I have made on the training set on the testing dataset.
+```{r echo = TRUE, warning = FALSE}
+testing <- testing[,!uselessVariables1]
+testing <- testing[,!uselessVariables2]
+```
+   
+## Fitting a Multinomial Linear Model for prediction
+Many of the explanatory variables are likely to be highly correlated because they measure movements from the same part of the body. It makes sense therefore to use Principal Components Analysis in order to try and reduce the number of explanatory variables, if we want to use a linear model for prediction. I'll set my threshold at 90% variance retained by PCA.
+```{r, MultinomChunk, echo = TRUE, cache = TRUE, warning = FALSE, results = 'hide', cache.lazy = FALSE}
+library(caret)
+trainingSmall <- training[,8:59]
+preProc <- preProcess(trainingSmall, method="pca", thresh = 0.9)
+preProc
+trainingPC <- predict(preProc, trainingSmall)
+modelFitMultinom <- train(training$classe ~ ., method="multinom", data=trainingPC)
+modelFitMultinom
+```
+
+```{r echo=FALSE}
+preProc
+modelFitMultinom
+```
+PCA needed 18 components to capture 90% of the variance. The accuracy of the selected model is only about 50%. Not so satisfactory thus. I know that out-of-sample accuracy can only be lower so there is no need to estimate it. I move on to a Tree model.
+
+## Fitting a Tree model for prediction
+```{r, TreeChunk, echo = TRUE, cache = TRUE, warning = FALSE, cache.lazy = FALSE}
+library(caret)
+trainingSmall <- training[,8:60]
+modelFitTree <- train(classe ~ ., method="rpart", data = trainingSmall)
+library(rattle)
+fancyRpartPlot(modelFitTree$finalModel)
+```
+   
+```{r echo=FALSE}
+modelFitTree
+```
+   
+The accuracy of the selected model is 53.02% which is a little improvement on the Multinomial model but still not satisfactory. I try improving prediction accuracy using a Bagging strategy.
+
+## Using a Bagging method for prediction
+```{r, BaggingChunk, echo = TRUE, cache = TRUE, warning = FALSE, cache.lazy = FALSE}
+library(caret)
+trainingSmall <- training[,8:60]
+modelFitTreeBag <- train(classe ~ ., method="treebag", data = trainingSmall)
+modelFitTreeBag
+```
+
+### Estimating prediction accuracy
+```{r, echo = TRUE, cache = TRUE, warning = FALSE}
+library(caret)
+testingSmall <- testing[,8:60]
+testing_pred <- predict(modelFitTreeBag, testingSmall)
+confusionMatrix(testing$classe, predict(modelFitTreeBag, testingSmall))
+```
+   
+The estimated out-of-sample prediction accuracy is 98.16%, which is quite good. I'm satisfied with this model for the purpose of this course so I stop searching for improvements although of course I could still try different models.
+
+In the following plot I show the out-of-sample correct predictions versus incorrect, using the same data plot as done in the exploratory phase.
+
+```{r, echo = TRUE, cache = TRUE, warning = FALSE}
+testing$predRight <- testing_pred == testing$classe
+qplot(pitch_belt, total_accel_forearm, colour=predRight, data=testing, main="Predictions")
+```
+   
+This plot, compared to the one with the observations above, shows that the predictions done by the model estimated with the Bagging method reflect very well the structure of the data and the few wrong predictions are made at points where there is much overlapping among the different classes and can be expected to result more difficult to classify correctly.
+
+## Conclusions
+After fitting a Multinomial model, a Tree model and a Bagging model on my data, I can conclude that the best fitting model is the bagging model. This performs quite well, captures the structure of the data, and predicts the quality of the exercise with an estimated accuracy of 98.16%.
